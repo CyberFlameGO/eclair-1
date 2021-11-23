@@ -32,7 +32,9 @@ import scala.util.Try
 
 object OnionMessages {
 
-  case class OnionMessageConfig(relayPolicy: RelayPolicy, timeout: FiniteDuration)
+  case class OnionMessageConfig(relayPolicy: RelayPolicy,
+                                timeout: FiniteDuration,
+                                maxAttempts: Int)
 
   case class IntermediateNode(nodeId: PublicKey, padding: Option[ByteVector] = None)
 
@@ -86,10 +88,10 @@ object OnionMessages {
                    intermediateNodes: Seq[IntermediateNode],
                    destination: Destination,
                    content: Seq[OnionMessagePayloadTlv],
-                   userCustomTlvs: Seq[GenericTlv] = Nil): Try[(PublicKey, OnionMessage)] = Try{
+                   userCustomTlvs: TlvStream[OnionMessagePayloadTlv] = TlvStream.empty): Try[(PublicKey, OnionMessage)] = Try{
     val route = buildRoute(blindingSecret, intermediateNodes, destination)
-    val lastPayload = MessageOnionCodecs.perHopPayloadCodec.encode(TlvStream(EncryptedData(route.encryptedPayloads.last) +: content, userCustomTlvs)).require.bytes
-    val payloads = route.encryptedPayloads.dropRight(1).map(encTlv => MessageOnionCodecs.perHopPayloadCodec.encode(TlvStream(EncryptedData(encTlv))).require.bytes) :+ lastPayload
+    val lastPayload = MessageOnionCodecs.prefixedPerHopPayloadCodec.encode(TlvStream(EncryptedData(route.encryptedPayloads.last) +: (content ++ userCustomTlvs.records), userCustomTlvs.unknown)).require.bytes
+    val payloads = route.encryptedPayloads.dropRight(1).map(encTlv => MessageOnionCodecs.prefixedPerHopPayloadCodec.encode(TlvStream(EncryptedData(encTlv))).require.bytes) :+ lastPayload
     val payloadSize = payloads.map(_.length + Sphinx.MacLength).sum
     val packetSize = if (payloadSize <= 1300) {
       1300
@@ -124,7 +126,7 @@ object OnionMessages {
   private def decryptOnion(privateKey: PrivateKey, packet: OnionRoutingPacket): Either[DropReason, DecodedOnionPacket] = {
     Sphinx.peel(privateKey, None, packet) match {
       case Right(p: Sphinx.DecryptedPacket) =>
-        MessageOnionCodecs.perHopPayloadCodec.decode(p.payload.bits) match {
+        MessageOnionCodecs.prefixedPerHopPayloadCodec.decode(p.payload.bits) match {
           case Attempt.Successful(DecodeResult(perHopPayload, _)) if p.isLastPacket => Right(DecodedOnionPacket(perHopPayload, None))
           case Attempt.Successful(DecodeResult(perHopPayload, _)) => Right(DecodedOnionPacket(perHopPayload, Some(p.nextPacket)))
           case Attempt.Failure(f) => Left(CannotDecodeOnion(f.message))

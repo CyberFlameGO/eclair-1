@@ -20,12 +20,12 @@ class MessageOnionCodecsSpec extends AnyFunSuiteLike {
     )
 
     for ((expected, bin) <- testCases) {
-      val decoded = perHopPayloadCodec.decode(bin.bits).require.value
+      val decoded = prefixedPerHopPayloadCodec.decode(bin.bits).require.value
       assert(decoded == expected)
       val nextNodeId = randomKey().publicKey
       val Right(payload) = IntermediatePayload.validate(decoded, TlvStream(RouteBlindingEncryptedDataTlv.OutgoingNodeId(nextNodeId)), randomKey().publicKey)
       assert(payload.nextNodeId == nextNodeId)
-      val encoded = perHopPayloadCodec.encode(expected).require.bytes
+      val encoded = prefixedPerHopPayloadCodec.encode(expected).require.bytes
       assert(encoded == bin)
     }
   }
@@ -42,11 +42,11 @@ class MessageOnionCodecsSpec extends AnyFunSuiteLike {
     )
 
     for ((expected, bin) <- testCases) {
-      val decoded = perHopPayloadCodec.decode(bin.bits).require.value
+      val decoded = prefixedPerHopPayloadCodec.decode(bin.bits).require.value
       assert(decoded == expected)
       val Right(payload) = FinalPayload.validate(decoded, TlvStream.empty)
       assert(payload.pathId_opt.isEmpty)
-      val encoded = perHopPayloadCodec.encode(expected).require.bytes
+      val encoded = prefixedPerHopPayloadCodec.encode(expected).require.bytes
       assert(encoded == bin)
     }
   }
@@ -64,7 +64,7 @@ class MessageOnionCodecsSpec extends AnyFunSuiteLike {
     )
 
     for ((err, bin, blindedTlvs) <- testCases) {
-      val decoded = perHopPayloadCodec.decode(bin.bits).require.value
+      val decoded = prefixedPerHopPayloadCodec.decode(bin.bits).require.value
       assert(IntermediatePayload.validate(decoded, blindedTlvs, randomKey().publicKey) == Left(err))
     }
   }
@@ -80,7 +80,7 @@ class MessageOnionCodecsSpec extends AnyFunSuiteLike {
     )
 
     for ((err, bin, blindedTlvs) <- testCases) {
-      val decoded = perHopPayloadCodec.decode(bin.bits).require.value
+      val decoded = prefixedPerHopPayloadCodec.decode(bin.bits).require.value
       assert(FinalPayload.validate(decoded, blindedTlvs) == Left(err))
     }
   }

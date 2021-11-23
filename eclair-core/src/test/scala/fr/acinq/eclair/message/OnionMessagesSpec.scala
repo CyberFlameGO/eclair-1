@@ -21,7 +21,7 @@ import fr.acinq.bitcoin.scalacompat.{ByteVector32, Crypto}
 import fr.acinq.eclair.crypto.Sphinx
 import fr.acinq.eclair.crypto.Sphinx.PacketAndSecrets
 import fr.acinq.eclair.message.OnionMessages._
-import fr.acinq.eclair.wire.protocol.MessageOnionCodecs.perHopPayloadCodec
+import fr.acinq.eclair.wire.protocol.MessageOnionCodecs.prefixedPerHopPayloadCodec
 import fr.acinq.eclair.wire.protocol.OnionMessagePayloadTlv.EncryptedData
 import fr.acinq.eclair.wire.protocol.RouteBlindingEncryptedDataCodecs.blindedRouteDataCodec
 import fr.acinq.eclair.wire.protocol.RouteBlindingEncryptedDataTlv._
@@ -88,7 +88,7 @@ class OnionMessagesSpec extends AnyFunSuite {
 
     val publicKeys = routeToCarol.blindedNodes.map(_.blindedPublicKey) concat routeFromCarol.blindedNodes.map(_.blindedPublicKey)
     val encryptedPayloads = routeToCarol.encryptedPayloads ++ routeFromCarol.encryptedPayloads
-    val payloads = encryptedPayloads.map(encTlv => perHopPayloadCodec.encode(TlvStream(EncryptedData(encTlv))).require.bytes)
+    val payloads = encryptedPayloads.map(encTlv => prefixedPerHopPayloadCodec.encode(TlvStream(EncryptedData(encTlv))).require.bytes)
     val expectedPayloads = List(
       hex"3504336970e870b473ddbc27e3098bfa45bb1aa54f1f637f803d957e6271d8ffeba89da2665d62123763d9b634e30714144a1c165ac9",
       hex"5804561630da85e8759b8f3b94d74a539c6f0d870a87cf03d4986175865a2985553c997b560c32613bd9184c1a6d41a37027aabdab5433009d8409a1b638eb90373778a05716af2c2140b3196dca23997cdad4cfa7a7adc8d4",

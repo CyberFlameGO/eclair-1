@@ -139,7 +139,9 @@ object MessageOnionCodecs {
     .typecase(UInt64(66), tlvField(OfferCodecs.invoiceTlvCodec.as[Invoice]))
     .typecase(UInt64(68), tlvField(OfferCodecs.invoiceErrorTlvCodec.as[InvoiceError]))
 
-  val perHopPayloadCodec: Codec[TlvStream[OnionMessagePayloadTlv]] = TlvCodecs.lengthPrefixedTlvStream[OnionMessagePayloadTlv](onionTlvCodec).complete
+  val perHopPayloadCodec: Codec[TlvStream[OnionMessagePayloadTlv]] = TlvCodecs.tlvStream[OnionMessagePayloadTlv](onionTlvCodec).complete
+
+  val prefixedPerHopPayloadCodec: Codec[TlvStream[OnionMessagePayloadTlv]] = variableSizeBytesLong(CommonCodecs.varintoverflow, perHopPayloadCodec)
 
   val messageOnionPacketCodec: Codec[OnionRoutingPacket] = variableSizeBytes(uint16, bytes).exmap[OnionRoutingPacket](
     // The Sphinx packet header contains a version (1 byte), a public key (33 bytes) and a mac (32 bytes) -> total 66 bytes
