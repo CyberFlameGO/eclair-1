@@ -45,7 +45,7 @@ For more information please visit the [API documentation website](https://acinq.
 ## Documentation
 
 Please visit our [docs](./docs) folder to find detailed instructions on how to [configure](./docs/Configure.md) your
-node, connect to other nodes, open channels, send and receive payments, and help with more advanced scenarios. 
+node, connect to other nodes, open channels, send and receive payments, and help with more advanced scenarios.
 
 You will also find detailed [guides](./docs/Guides.md) and [frequently asked questions](./docs/FAQ.md) there.
 
@@ -178,11 +178,12 @@ eclair-node-<version>-<commit_id>/bin/eclair-node.sh -Dlogback.configurationFile
 ### Backup
 
 You need to backup:
-- your Bitcoin Core wallet
-- your Eclair channels
 
-For Bitcoin Core, you need to backup the wallet file for the wallet that Eclair is using. You only need to do this once, when the wallet is 
-created. See [Managing Wallets](https://github.com/bitcoin/bitcoin/blob/master/doc/managing-wallets.md) in the Bitcoin Core documentation for more information. 
+* your Bitcoin Core wallet
+* your Eclair channels
+
+For Bitcoin Core, you need to backup the wallet file for the wallet that Eclair is using. You only need to do this once, when the wallet is
+created. See [Managing Wallets](https://github.com/bitcoin/bitcoin/blob/master/doc/managing-wallets.md) in the Bitcoin Core documentation for more information.
 
 For Eclair, the files that you need to backup are located in your data directory. You must backup:
 
@@ -207,7 +208,7 @@ before copying that file to your final backup location.
 ## Docker
 
 A [Dockerfile](Dockerfile) x86_64 image is built on each commit on [docker hub](https://hub.docker.com/r/acinq/eclair) for running a dockerized eclair-node.
-For arm64 platforms you can use an [arm64 Dockerfile](contrib/arm64v8.Dockerfile) to build your own arm64 container. 
+For arm64 platforms you can use an [arm64 Dockerfile](contrib/arm64v8.Dockerfile) to build your own arm64 container.
 
 You can use the `JAVA_OPTS` environment variable to set arguments to `eclair-node`.
 
@@ -239,12 +240,15 @@ Here is how to run Eclair with plugins:
 eclair-node-<version>-<commit_id>/bin/eclair-node.sh <plugin1.jar> <plugin2.jar> <...>
 ```
 
-### Non-exhaustive plugins list
+We maintain some plugins in the [plugins](./plugins/) directory.
+The [offline commands plugin](./plugins/offline-commands/) is a good example of how to write a plugin that interacts with various features of eclair.
 
-Here are some plugins created by the Eclair community.
+There are also plugins provided by external contributors from the Eclair community.
+We provide a non-exhaustive list of these plugins below.
 If you need support for these plugins, head over to their respective github repository.
 
 * [Telegram Bot for Eclair alerts](https://github.com/engenegr/eclair-alarmbot-plugin)
+* [Hosted Channels](https://github.com/btcontract/plugin-hosted-channels)
 
 ## Testnet usage
 
