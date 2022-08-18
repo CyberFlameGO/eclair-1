@@ -31,7 +31,7 @@ import fr.acinq.eclair.db._
 import fr.acinq.eclair.payment.Bolt11Invoice.ExtraHop
 import fr.acinq.eclair.payment.Monitoring.{Metrics, Tags}
 import fr.acinq.eclair.payment._
-import fr.acinq.eclair.wire.protocol.OfferTypes.{InvoiceRequest, Offer}
+import fr.acinq.eclair.wire.protocol.OfferTypes.{InvoiceRequest, Offer, PaymentInfo}
 import fr.acinq.eclair.wire.protocol.PaymentOnion.FinalPayload
 import fr.acinq.eclair.wire.protocol._
 import fr.acinq.eclair.{CltvExpiry, CltvExpiryDelta, FeatureSupport, Features, InvoiceFeature, Logs, MilliSatoshi, MilliSatoshiLong, NodeParams, ShortChannelId, TimestampMilli, randomBytes, randomBytes32, randomKey}
@@ -248,12 +248,10 @@ object MultiPartHandler {
    * Use this message to create a Bolt 12 invoice to receive a payment for a given offer.
    *
    * @param nodeKey             the key that will be used to sign the invoice, which may be different from our public nodeId.
-   * @param offer               the offer this invoice corresponds to.
    * @param invoiceRequest      the request this invoice responds to.
    * @param paymentPreimage_opt payment preimage.
    */
   case class ReceiveOfferPayment(nodeKey: PrivateKey,
-                                 offer: Offer,
                                  invoiceRequest: InvoiceRequest,
                                  paymentPreimage_opt: Option[ByteVector32] = None,
                                  paymentType: String = PaymentType.Blinded) extends ReceivePayment
@@ -299,8 +297,9 @@ object MultiPartHandler {
                   invoice
                 case r: ReceiveOfferPayment =>
                   // TODO: get blinded paths from the router instead
+                  val amount = r.invoiceRequest.amount.get
                   val pathId = RouteBlindingEncryptedDataTlv.PathId(randomBytes32())
-                  val dummyConstraints = RouteBlindingEncryptedDataTlv.PaymentConstraints(CltvExpiry(nodeParams.currentBlockHeight + 144), 1 msat)
+                  val dummyConstraints = RouteBlindingEncryptedDataTlv.PaymentConstraints(nodeParams.channelConf.minFinalExpiryDelta.toCltvExpiry(nodeParams.currentBlockHeight), 1 msat)
                   val dummyRelay = RouteBlindingEncryptedDataTlv.PaymentRelay(CltvExpiryDelta(0), 0, 0 msat)
                   val dummyScid = RouteBlindingEncryptedDataTlv.OutgoingChannelId(ShortChannelId.toSelf)
                   val dummyPath = Seq(
@@ -308,9 +307,10 @@ object MultiPartHandler {
                     (nodeParams.nodeId, RouteBlindingEncryptedDataCodecs.blindedRouteDataCodec.encode(TlvStream(dummyConstraints, pathId)).require.bytes),
                   )
                   val blindedRoute = Sphinx.RouteBlinding.create(randomKey(), dummyPath.map(_._1), dummyPath.map(_._2))
+                  val paymentInfo = PaymentInfo(0 msat, 0, nodeParams.channelConf.minFinalExpiryDelta, 0 msat, amount, Features.empty)
                   val invoiceFeatures = featuresTrampolineOpt.remove(Features.RouteBlinding).add(Features.RouteBlinding, FeatureSupport.Mandatory)
-                  val invoice = Bolt12Invoice(r.offer, r.invoiceRequest, paymentPreimage, r.nodeKey, nodeParams.channelConf.minFinalExpiryDelta, invoiceFeatures, Seq(blindedRoute.route))
-                  context.log.debug("generated invoice={} for offerId={}", invoice.toString, r.offer.offerId)
+                  val invoice = Bolt12Invoice(r.invoiceRequest, paymentPreimage, r.nodeKey, invoiceFeatures, Seq((blindedRoute.route, paymentInfo)))
+                  context.log.debug("generated invoice={}", invoice)
                   nodeParams.db.payments.addIncomingBlindedPayment(invoice, paymentPreimage, Map(blindedRoute.lastBlinding -> pathId.data), r.paymentType)
                   invoice
               }
