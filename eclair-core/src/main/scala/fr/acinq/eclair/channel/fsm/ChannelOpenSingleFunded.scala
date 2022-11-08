@@ -31,7 +31,7 @@ import fr.acinq.eclair.crypto.ShaChain
 import fr.acinq.eclair.transactions.Transactions.TxOwner
 import fr.acinq.eclair.transactions.{Scripts, Transactions}
 import fr.acinq.eclair.wire.protocol.{AcceptChannel, AnnouncementSignatures, ChannelReady, ChannelTlv, Error, FundingCreated, FundingSigned, OpenChannel, TlvStream}
-import fr.acinq.eclair.{Features, MilliSatoshiLong, RealShortChannelId, randomKey, toLongId}
+import fr.acinq.eclair.{Features, MilliSatoshiLong, RealShortChannelId, addressFromPublicKeyScript, randomKey, toLongId}
 import scodec.bits.ByteVector
 
 import scala.util.{Failure, Success, Try}
@@ -189,8 +189,9 @@ trait ChannelOpenSingleFunded extends SingleFundingHandlers with ErrorHandlers {
           log.debug("remote params: {}", remoteParams)
           log.info("remote will use fundingMinDepth={}", accept.minimumDepth)
           val localFundingPubkey = keyManager.fundingPublicKey(init.localParams.fundingKeyPath)
-          val fundingPubkeyScript = Script.write(Script.pay2wsh(Scripts.multiSig2of2(localFundingPubkey.publicKey, remoteParams.fundingPubKey)))
-          wallet.makeFundingTx(fundingPubkeyScript, init.fundingAmount, init.fundingTxFeerate).pipeTo(self)
+          val fundingPubkeyScript = Script.pay2wsh(Scripts.multiSig2of2(localFundingPubkey.publicKey, remoteParams.fundingPubKey))
+          val address = addressFromPublicKeyScript(fundingPubkeyScript, nodeParams.chainHash)
+          wallet.makeFundingTx(address, init.fundingAmount, init.fundingTxFeerate).pipeTo(self)
           goto(WAIT_FOR_FUNDING_INTERNAL) using DATA_WAIT_FOR_FUNDING_INTERNAL(init.temporaryChannelId, init.localParams, remoteParams, init.fundingAmount, init.pushAmount_opt.getOrElse(0 msat), init.commitTxFeerate, accept.firstPerCommitmentPoint, init.channelConfig, channelFeatures, open)
       }
 

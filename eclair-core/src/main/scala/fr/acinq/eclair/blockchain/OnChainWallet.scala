@@ -16,8 +16,10 @@
 
 package fr.acinq.eclair.blockchain
 
+import fr.acinq.bitcoin.psbt.Psbt
 import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
 import fr.acinq.bitcoin.scalacompat.{ByteVector32, Satoshi, Transaction}
+import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient.ProcessPsbtResponse
 import fr.acinq.eclair.blockchain.fee.FeeratePerKw
 import scodec.bits.ByteVector
 
@@ -38,14 +40,16 @@ trait OnChainChannelFunder {
   /** Sign the wallet inputs of the provided transaction. */
   def signTransaction(tx: Transaction, allowIncomplete: Boolean)(implicit ec: ExecutionContext): Future[SignTransactionResponse]
 
-  /**
+  def signPsbt(psbt: Psbt)(implicit ec: ExecutionContext): Future[ProcessPsbtResponse]
+
+    /**
    * Publish a transaction on the bitcoin network.
    * This method must be idempotent: if the tx was already published, it must return a success.
    */
   def publishTransaction(tx: Transaction)(implicit ec: ExecutionContext): Future[ByteVector32]
 
   /** Create a fully signed channel funding transaction with the provided pubkeyScript. */
-  def makeFundingTx(pubkeyScript: ByteVector, amount: Satoshi, feeRate: FeeratePerKw)(implicit ec: ExecutionContext): Future[MakeFundingTxResponse]
+  def makeFundingTx(address: String, amount: Satoshi, feeRate: FeeratePerKw)(implicit ec: ExecutionContext): Future[MakeFundingTxResponse]
 
   /**
    * Committing *must* include publishing the transaction on the network.

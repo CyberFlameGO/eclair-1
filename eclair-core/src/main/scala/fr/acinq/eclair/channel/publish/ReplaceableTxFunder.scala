@@ -19,10 +19,12 @@ package fr.acinq.eclair.channel.publish
 import akka.actor.typed.eventstream.EventStream
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import fr.acinq.bitcoin.scalacompat.{ByteVector32, OutPoint, Satoshi, Script, Transaction, TxOut}
+import fr.acinq.bitcoin.psbt.Psbt
+import fr.acinq.bitcoin.scalacompat.{ByteVector32, OutPoint, Satoshi, Script, Transaction, TxOut, computeBIP44Address, computeBIP84Address}
+import fr.acinq.bitcoin.utils.EitherKt
 import fr.acinq.eclair.NotificationsLogger.NotifyNodeOperator
 import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient
-import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient.{FundTransactionOptions, InputWeight}
+import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient.{FundPsbtInput, FundPsbtOptions, FundTransactionOptions, InputWeight}
 import fr.acinq.eclair.blockchain.fee.FeeratePerKw
 import fr.acinq.eclair.channel.Commitments
 import fr.acinq.eclair.channel.publish.ReplaceableTxPrePublisher._
@@ -314,10 +316,19 @@ private class ReplaceableTxFunder(nodeParams: NodeParams,
   }
 
   def signWalletInputs(locallySignedTx: ReplaceableTxWithWalletInputs, txFeerate: FeeratePerKw, amountIn: Satoshi): Behavior[Command] = {
-    val inputInfo = BitcoinCoreClient.PreviousTx(locallySignedTx.txInfo.input, locallySignedTx.txInfo.tx.txIn.head.witness)
-    context.pipeToSelf(bitcoinClient.signTransaction(locallySignedTx.txInfo.tx, Seq(inputInfo))) {
-      case Success(signedTx) => SignWalletInputsOk(signedTx.tx)
-      case Failure(reason) => SignWalletInputsFailed(reason)
+    import fr.acinq.bitcoin.scalacompat.KotlinUtils._
+
+    val psbt = new Psbt(locallySignedTx.txInfo.tx)
+    val updated = psbt.updateWitnessInput(locallySignedTx.txInfo.input.outPoint, locallySignedTx.txInfo.input.txOut, null, fr.acinq.bitcoin.Script.parse(locallySignedTx.txInfo.input.redeemScript), null, java.util.Map.of())
+    val signed = EitherKt.flatMap(updated, (psbt: Psbt) => psbt.finalizeWitnessInput(0, locallySignedTx.txInfo.tx.txIn.head.witness))
+    val psbt1 = signed.getRight
+    val f = bitcoinClient.utxoUpdatePsbt(psbt1).flatMap(p => bitcoinClient.processPsbt(p))
+    context.pipeToSelf(f) {
+      case Success(processPsbtResponse) =>
+        val signedTx = processPsbtResponse.finalTx
+        SignWalletInputsOk(signedTx)
+      case Failure(reason) =>
+        SignWalletInputsFailed(reason)
     }
     Behaviors.receiveMessagePartial {
       case SignWalletInputsOk(signedTx) =>
@@ -352,6 +363,8 @@ private class ReplaceableTxFunder(nodeParams: NodeParams,
   }
 
   private def addInputs(anchorTx: ClaimLocalAnchorWithWitnessData, targetFeerate: FeeratePerKw, commitments: Commitments): Future[(ClaimLocalAnchorWithWitnessData, Satoshi)] = {
+    import fr.acinq.bitcoin.scalacompat.KotlinUtils._
+
     val dustLimit = commitments.localParams.dustLimit
     val commitTx = dummySignedCommitTx(commitments).tx
     // NB: fundrawtransaction requires at least one output, and may add at most one additional change output.
@@ -368,8 +381,11 @@ private class ReplaceableTxFunder(nodeParams: NodeParams,
           val changeOutput = fundTxResponse.tx.txOut(changePos)
           val txSingleOutput = fundTxResponse.tx.copy(txOut = Seq(changeOutput))
           // We ask bitcoind to sign the wallet inputs to learn their final weight and adjust the change amount.
-          bitcoinClient.signTransaction(txSingleOutput, allowIncomplete = true).map(signTxResponse => {
-            val dummySignedTx = addSigs(anchorTx.updateTx(signTxResponse.tx).txInfo, PlaceHolderSig)
+          val psbt = new Psbt(txSingleOutput)
+          bitcoinClient.utxoUpdatePsbt(psbt).flatMap(p => bitcoinClient.processPsbt(p)).map(processPsbtResponse => {
+            // we cannot extract the final tx from the psbt because it is not fully signed yet
+            val partiallySignedTx = processPsbtResponse.extractPartiallySignedTx
+            val dummySignedTx = addSigs(anchorTx.updateTx(partiallySignedTx).txInfo, PlaceHolderSig)
             val packageWeight = commitTx.weight() + dummySignedTx.tx.weight()
             val anchorTxFee = weight2fee(targetFeerate, packageWeight) - weight2fee(commitments.localCommit.spec.commitTxFeerate, commitTx.weight())
             val changeAmount = dustLimit.max(fundTxResponse.amountIn - anchorTxFee)
@@ -395,5 +411,4 @@ private class ReplaceableTxFunder(nodeParams: NodeParams,
       (unsignedTx, fundTxResponse.amountIn)
     })
   }
-
 }

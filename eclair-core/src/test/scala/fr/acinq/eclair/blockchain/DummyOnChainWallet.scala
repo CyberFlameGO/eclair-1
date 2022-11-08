@@ -17,16 +17,20 @@
 package fr.acinq.eclair.blockchain
 
 import fr.acinq.bitcoin.TxIn.SEQUENCE_FINAL
+import fr.acinq.bitcoin.psbt.Psbt
 import fr.acinq.bitcoin.scalacompat.Crypto.PublicKey
-import fr.acinq.bitcoin.scalacompat.{ByteVector32, Crypto, OutPoint, Satoshi, SatoshiLong, Script, Transaction, TxIn, TxOut}
+import fr.acinq.bitcoin.scalacompat.{Block, ByteVector32, Crypto, OutPoint, Satoshi, SatoshiLong, Script, Transaction, TxIn, TxOut}
 import fr.acinq.bitcoin.{Bech32, SigHash, SigVersion}
 import fr.acinq.eclair.blockchain.OnChainWallet.{FundTransactionResponse, MakeFundingTxResponse, OnChainBalance, SignTransactionResponse}
+import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient
+import fr.acinq.eclair.blockchain.bitcoind.rpc.BitcoinCoreClient.ProcessPsbtResponse
 import fr.acinq.eclair.blockchain.fee.FeeratePerKw
 import fr.acinq.eclair.transactions.Transactions
-import fr.acinq.eclair.{randomBytes32, randomKey}
+import fr.acinq.eclair.{addressToPublicKeyScript, randomBytes32, randomKey}
 import scodec.bits._
 
 import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.jdk.CollectionConverters.SeqHasAsJava
 
 /**
  * Created by PM on 06/07/2017.
@@ -48,10 +52,12 @@ class DummyOnChainWallet extends OnChainWallet {
 
   override def signTransaction(tx: Transaction, allowIncomplete: Boolean)(implicit ec: ExecutionContext): Future[SignTransactionResponse] = Future.successful(SignTransactionResponse(tx, complete = true))
 
+  override def signPsbt(psbt: Psbt)(implicit ec: ExecutionContext): Future[BitcoinCoreClient.ProcessPsbtResponse] = Future.successful(ProcessPsbtResponse(psbt, complete = true))
+
   override def publishTransaction(tx: Transaction)(implicit ec: ExecutionContext): Future[ByteVector32] = Future.successful(tx.txid)
 
-  override def makeFundingTx(pubkeyScript: ByteVector, amount: Satoshi, feeRatePerKw: FeeratePerKw)(implicit ec: ExecutionContext): Future[MakeFundingTxResponse] = {
-    val tx = DummyOnChainWallet.makeDummyFundingTx(pubkeyScript, amount)
+  override def makeFundingTx(address: String, amount: Satoshi, feeRatePerKw: FeeratePerKw)(implicit ec: ExecutionContext): Future[MakeFundingTxResponse] = {
+    val tx = DummyOnChainWallet.makeDummyFundingTx(address, amount)
     funded += (tx.fundingTx.txid -> tx.fundingTx)
     Future.successful(tx)
   }
@@ -88,9 +94,11 @@ class NoOpOnChainWallet extends OnChainWallet {
 
   override def signTransaction(tx: Transaction, allowIncomplete: Boolean)(implicit ec: ExecutionContext): Future[SignTransactionResponse] = Promise().future // will never be completed
 
+  override def signPsbt(psbt: Psbt)(implicit ec: ExecutionContext): Future[ProcessPsbtResponse] = Promise().future // will never be completed
+
   override def publishTransaction(tx: Transaction)(implicit ec: ExecutionContext): Future[ByteVector32] = Future.successful(tx.txid)
 
-  override def makeFundingTx(pubkeyScript: ByteVector, amount: Satoshi, feeRatePerKw: FeeratePerKw)(implicit ec: ExecutionContext): Future[MakeFundingTxResponse] = Promise().future // will never be completed
+  override def makeFundingTx(address: String, amount: Satoshi, feeRatePerKw: FeeratePerKw)(implicit ec: ExecutionContext): Future[MakeFundingTxResponse] = Promise().future // will never be completed
 
   override def commit(tx: Transaction)(implicit ec: ExecutionContext): Future[Boolean] = Future.successful(true)
 
@@ -154,10 +162,28 @@ class SingleKeyOnChainWallet extends OnChainWallet {
     Future.successful(SignTransactionResponse(signedTx, complete))
   }
 
+  override def signPsbt(psbt: Psbt)(implicit ec: ExecutionContext): Future[ProcessPsbtResponse] = {
+    import fr.acinq.bitcoin.scalacompat.KotlinUtils._
+
+    val tx: Transaction = psbt.getGlobal.getTx
+    val signedPsbt = tx.txIn.zipWithIndex.foldLeft(new Psbt(tx)) {
+      case (currentPsbt, (txIn, index)) => inputs.find(_.txid == txIn.outPoint.txid) match {
+        case Some(inputTx) =>
+          val sig = Transaction.signInput(tx, index, Script.pay2pkh(pubkey), SigHash.SIGHASH_ALL, inputTx.txOut.head.amount, SigVersion.SIGVERSION_WITNESS_V0, privkey)
+          val updated = currentPsbt.updateWitnessInput(OutPoint(inputTx, 0), inputTx.txOut.head, null, Script.pay2pkh(pubkey).map(scala2kmp).asJava, null, java.util.Map.of()).getRight
+          val finalized = updated.finalizeWitnessInput(OutPoint(inputTx, 0), Script.witnessPay2wpkh(pubkey, sig))
+          finalized.getRight
+        case None => currentPsbt
+      }
+    }
+    val complete = signedPsbt.extract().isRight
+    Future.successful(ProcessPsbtResponse(signedPsbt, complete))
+  }
+
   override def publishTransaction(tx: Transaction)(implicit ec: ExecutionContext): Future[ByteVector32] = Future.successful(tx.txid)
 
-  override def makeFundingTx(pubkeyScript: ByteVector, amount: Satoshi, feeRatePerKw: FeeratePerKw)(implicit ec: ExecutionContext): Future[MakeFundingTxResponse] = {
-    val tx = Transaction(2, Nil, Seq(TxOut(amount, pubkeyScript)), 0)
+  override def makeFundingTx(address: String, amount: Satoshi, feeRatePerKw: FeeratePerKw)(implicit ec: ExecutionContext): Future[MakeFundingTxResponse] = {
+    val tx = Transaction(2, Nil, Seq(TxOut(amount, addressToPublicKeyScript(address, Block.RegtestGenesisBlock.hash))), 0)
     for {
       fundedTx <- fundTransaction(tx, feeRatePerKw, replaceable = true, lockUtxos = true)
       signedTx <- signTransaction(fundedTx.tx, allowIncomplete = true)
@@ -188,11 +214,11 @@ object DummyOnChainWallet {
   val dummyReceiveAddress: String = "bcrt1qwcv8naajwn8fjhu8z59q9e6ucrqr068rlcenux"
   val dummyReceivePubkey: PublicKey = PublicKey(hex"028feba10d0eafd0fad8fe20e6d9206e6bd30242826de05c63f459a00aced24b12")
 
-  def makeDummyFundingTx(pubkeyScript: ByteVector, amount: Satoshi): MakeFundingTxResponse = {
+  def makeDummyFundingTx(address: String, amount: Satoshi): MakeFundingTxResponse = {
     val fundingTx = Transaction(
       version = 2,
       txIn = TxIn(OutPoint(ByteVector32(ByteVector.fill(32)(1)), 42), signatureScript = Nil, sequence = SEQUENCE_FINAL) :: Nil,
-      txOut = TxOut(amount, pubkeyScript) :: Nil,
+      txOut = TxOut(amount, addressToPublicKeyScript(address, Block.RegtestGenesisBlock.hash)) :: Nil,
       lockTime = 0
     )
     MakeFundingTxResponse(fundingTx, 0, 420 sat)

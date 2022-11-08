@@ -84,6 +84,16 @@ package object eclair {
     Bitcoin.addressToPublicKeyScript(chainHash, address).asScala.toSeq.map(kmp2scala)
   }
 
+  /**
+   *
+   * @param script public key script
+   * @param chainHash pubkeyScript
+   * @return the address for this public key script on this chain
+   */
+  def addressFromPublicKeyScript(script: Seq[ScriptElt], chainHash: ByteVector32): String = {
+    Bitcoin.addressFromPublicKeyScript(chainHash, Script.write(script).toArray)
+  }
+
   implicit class MilliSatoshiLong(private val n: Long) extends AnyVal {
     def msat = MilliSatoshi(n)
   }
