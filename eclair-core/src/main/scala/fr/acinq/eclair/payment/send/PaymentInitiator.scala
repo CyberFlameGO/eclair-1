@@ -50,22 +50,20 @@ class PaymentInitiator(nodeParams: NodeParams, outgoingPaymentFactory: PaymentIn
       }
       val paymentCfg = SendPaymentConfig(paymentId, paymentId, r.externalId, r.paymentHash, r.invoice.nodeId, Upstream.Local(paymentId), Some(r.invoice), storeInDb = true, publishEvent = true, recordPathFindingMetrics = true)
       val finalExpiry = r.finalExpiry(nodeParams)
-      r.invoice match {
-        case invoice: Bolt11Invoice =>
-          val recipient = ClearRecipient(invoice, r.recipientAmount, finalExpiry, r.userCustomTlvs)
-          if (!nodeParams.features.invoiceFeatures().areSupported(recipient.features)) {
-            sender() ! PaymentFailed(paymentId, r.paymentHash, LocalFailure(r.recipientAmount, Nil, UnsupportedFeatures(recipient.features)) :: Nil)
-          } else if (Features.canUseFeature(nodeParams.features.invoiceFeatures(), recipient.features, Features.BasicMultiPartPayment)) {
-            val fsm = outgoingPaymentFactory.spawnOutgoingMultiPartPayment(context, paymentCfg)
-            fsm ! MultiPartPaymentLifecycle.SendMultiPartPayment(self, recipient, r.maxAttempts, r.routeParams)
-            context become main(pending + (paymentId -> PendingPaymentToNode(sender(), r)))
-          } else {
-            val fsm = outgoingPaymentFactory.spawnOutgoingPayment(context, paymentCfg)
-            fsm ! PaymentLifecycle.SendPaymentToNode(self, r.recipientAmount, recipient, r.maxAttempts, r.routeParams)
-            context become main(pending + (paymentId -> PendingPaymentToNode(sender(), r)))
-          }
-        case _: Bolt12Invoice =>
-          sender() ! PaymentFailed(paymentId, r.paymentHash, LocalFailure(r.recipientAmount, Nil, new IllegalArgumentException("payments to Bolt12 invoices are not supported yet")) :: Nil)
+      val recipient = r.invoice match {
+        case invoice: Bolt11Invoice => ClearRecipient(invoice, r.recipientAmount, finalExpiry, r.userCustomTlvs)
+        case invoice: Bolt12Invoice => BlindedRecipient(invoice, r.recipientAmount, finalExpiry, r.userCustomTlvs)
+      }
+      if (!nodeParams.features.invoiceFeatures().areSupported(recipient.features)) {
+        sender() ! PaymentFailed(paymentId, r.paymentHash, LocalFailure(r.recipientAmount, Nil, UnsupportedFeatures(recipient.features)) :: Nil)
+      } else if (Features.canUseFeature(nodeParams.features.invoiceFeatures(), recipient.features, Features.BasicMultiPartPayment)) {
+        val fsm = outgoingPaymentFactory.spawnOutgoingMultiPartPayment(context, paymentCfg)
+        fsm ! MultiPartPaymentLifecycle.SendMultiPartPayment(self, recipient, r.maxAttempts, r.routeParams)
+        context become main(pending + (paymentId -> PendingPaymentToNode(sender(), r)))
+      } else {
+        val fsm = outgoingPaymentFactory.spawnOutgoingPayment(context, paymentCfg)
+        fsm ! PaymentLifecycle.SendPaymentToNode(self, r.recipientAmount, recipient, r.maxAttempts, r.routeParams)
+        context become main(pending + (paymentId -> PendingPaymentToNode(sender(), r)))
       }
 
     case r: SendSpontaneousPayment =>
@@ -119,18 +117,16 @@ class PaymentInitiator(nodeParams: NodeParams, outgoingPaymentFactory: PaymentIn
               sender() ! PaymentFailed(paymentId, r.paymentHash, LocalFailure(r.recipientAmount, Nil, t) :: Nil)
           }
         case None =>
-          r.invoice match {
-            case invoice: Bolt11Invoice =>
-              sender() ! SendPaymentToRouteResponse(paymentId, parentPaymentId, None)
-              val paymentCfg = SendPaymentConfig(paymentId, parentPaymentId, r.externalId, r.paymentHash, r.recipientNodeId, Upstream.Local(paymentId), Some(r.invoice), storeInDb = true, publishEvent = true, recordPathFindingMetrics = false)
-              val finalExpiry = r.finalExpiry(nodeParams)
-              val recipient = ClearRecipient(invoice, r.recipientAmount, finalExpiry, Nil)
-              val payFsm = outgoingPaymentFactory.spawnOutgoingPayment(context, paymentCfg)
-              payFsm ! PaymentLifecycle.SendPaymentToRoute(self, Left(r.route), r.amount, recipient)
-              context become main(pending + (paymentId -> PendingPaymentToRoute(sender(), r)))
-            case _: Bolt12Invoice =>
-              sender() ! PaymentFailed(paymentId, r.paymentHash, LocalFailure(r.recipientAmount, Nil, new IllegalArgumentException("payments to Bolt12 invoices are not supported yet")) :: Nil)
+          sender() ! SendPaymentToRouteResponse(paymentId, parentPaymentId, None)
+          val paymentCfg = SendPaymentConfig(paymentId, parentPaymentId, r.externalId, r.paymentHash, r.recipientNodeId, Upstream.Local(paymentId), Some(r.invoice), storeInDb = true, publishEvent = true, recordPathFindingMetrics = false)
+          val finalExpiry = r.finalExpiry(nodeParams)
+          val recipient = r.invoice match {
+            case invoice: Bolt11Invoice => ClearRecipient(invoice, r.recipientAmount, finalExpiry, Nil)
+            case invoice: Bolt12Invoice => BlindedRecipient(invoice, r.recipientAmount, finalExpiry, Nil)
           }
+          val payFsm = outgoingPaymentFactory.spawnOutgoingPayment(context, paymentCfg)
+          payFsm ! PaymentLifecycle.SendPaymentToRoute(self, Left(r.route), r.amount, recipient)
+          context become main(pending + (paymentId -> PendingPaymentToRoute(sender(), r)))
         case _ =>
           sender() ! PaymentFailed(paymentId, r.paymentHash, LocalFailure(r.recipientAmount, Nil, TrampolineMultiNodeNotSupported) :: Nil)
       }
@@ -195,18 +191,15 @@ class PaymentInitiator(nodeParams: NodeParams, outgoingPaymentFactory: PaymentIn
   }
 
   private def buildTrampolinePayment(r: SendRequestedPayment, trampolineHop: NodeHop): Try[ClearTrampolineRecipient] = {
+    // We generate a random secret for the payment to the trampoline node.
+    val trampolineSecret = r match {
+      case r: SendPaymentToRoute => r.trampoline_opt.map(_.paymentSecret).getOrElse(randomBytes32())
+      case _ => randomBytes32()
+    }
+    val finalExpiry = r.finalExpiry(nodeParams)
     r.invoice match {
-      case invoice: Bolt11Invoice =>
-        // We generate a random secret for the payment to the trampoline node.
-        val trampolineSecret = r match {
-          case r: SendPaymentToRoute => r.trampoline_opt.map(_.paymentSecret).getOrElse(randomBytes32())
-          case _ => randomBytes32()
-        }
-        val finalExpiry = r.finalExpiry(nodeParams)
-        val recipient = ClearTrampolineRecipient(invoice, r.recipientAmount, r.recipientAmount, finalExpiry, trampolineHop, trampolineSecret)
-        Success(recipient)
-      case _: Bolt12Invoice =>
-        Failure(new IllegalArgumentException("payments to Bolt12 invoices are not supported yet"))
+      case invoice: Bolt11Invoice => Success(ClearTrampolineRecipient(invoice, r.recipientAmount, r.recipientAmount, finalExpiry, trampolineHop, trampolineSecret))
+      case _: Bolt12Invoice => Failure(new IllegalArgumentException("trampoline blinded payments are not supported yet"))
     }
   }
 

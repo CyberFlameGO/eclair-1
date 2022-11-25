@@ -76,7 +76,7 @@ class PaymentLifecycle(nodeParams: NodeParams, cfg: SendPaymentConfig, router: A
   when(WAITING_FOR_ROUTE) {
     case Event(RouteResponse(route +: _), WaitingForRoute(request, failures, ignore)) =>
       log.info(s"route found: attempt=${failures.size + 1}/${request.maxAttempts} route=${route.printNodes()} channels=${route.printChannels()}")
-      OutgoingPaymentPacket.buildOutgoingPayment(self, cfg.upstream, paymentHash, route, request.recipient) match {
+      OutgoingPaymentPacket.buildOutgoingPayment(self, nodeParams.privateKey, cfg.upstream, paymentHash, route, request.recipient) match {
         case Success(payment) =>
           register ! Register.ForwardShortId(self.toTyped[Register.ForwardShortIdFailure[CMD_ADD_HTLC]], payment.outgoingChannel, payment.cmd)
           goto(WAITING_FOR_PAYMENT_COMPLETE) using WaitingForComplete(request, payment.cmd, failures, payment.sharedSecrets, ignore, route)
@@ -247,6 +247,20 @@ class PaymentLifecycle(nodeParams: NodeParams, cfg: SendPaymentConfig, router: A
               router ! RouteRequest(nodeParams.nodeId, recipient.targetNodeId, request.amount, request.maxFee, recipient.extraEdges, ignore + nodeId, request.routeParams, paymentContext = Some(cfg.paymentContext))
               goto(WAITING_FOR_ROUTE) using WaitingForRoute(request, failures :+ failure, ignore + nodeId)
           }
+        }
+      case Success(e@Sphinx.DecryptedFailurePacket(nodeId, _: InvalidOnionBlinding)) =>
+        // there was a failure inside the blinded route we used: we cannot know why it failed, so let's ignore it.
+        log.info(s"received an error coming from nodeId=$nodeId inside the blinded route, retrying with different blinded routes")
+        val failure = RemoteFailure(request.amount, recipient.fullRoute(route), e)
+        val extraEdges1 = PaymentFailure.updateExtraEdges(failures :+ failure, recipient).extraEdges
+        val ignore1 = PaymentFailure.updateIgnored(failure, ignore)
+        request match {
+          case _: SendPaymentToRoute =>
+            log.error("unexpected retry during SendPaymentToRoute")
+            stop(FSM.Normal)
+          case request: SendPaymentToNode =>
+            router ! RouteRequest(nodeParams.nodeId, recipient.targetNodeId, request.amount, request.maxFee, extraEdges1, ignore1, request.routeParams, paymentContext = Some(cfg.paymentContext))
+            goto(WAITING_FOR_ROUTE) using WaitingForRoute(request, failures :+ failure, ignore1)
         }
       case Success(e@Sphinx.DecryptedFailurePacket(nodeId, failureMessage)) =>
         log.info(s"received an error message from nodeId=$nodeId, trying to use a different channel (failure=$failureMessage)")
